@@ -1,0 +1,539 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mental Health Assistant</title>
+    <script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.2/dist/brain-browser.min.js"></script>
+    <style>
+        .user-msg { 
+            text-align: right; 
+            background-color: #d1e7dd; 
+            padding: 10px; 
+            margin: 5px; 
+            border-radius: 10px; 
+        }
+        .bot-msg { 
+            text-align: left; 
+            background-color: #f8d7da; 
+            padding: 10px; 
+            margin: 5px; 
+            border-radius: 10px; 
+        }
+        #chat-box, #history-box { 
+            height: 300px; 
+            overflow-y: scroll; 
+            border: 1px solid #ccc; 
+            padding: 10px; 
+            margin-bottom: 10px; 
+        }
+        #chat-input { 
+            width: 80%; 
+            padding: 10px; 
+            margin: 10px 0; 
+        }
+        button { 
+            padding: 10px 20px; 
+            margin: 5px; 
+            cursor: pointer; 
+            background-color: #007bff; 
+            color: white; 
+            border: none; 
+            border-radius: 5px; 
+        }
+        button:hover { 
+            background-color: #0056b3; 
+        }
+        #home-view, #chat-view, #history-view { 
+            text-align: center; 
+            padding: 20px; 
+        }
+        h1 { 
+            color: #333; 
+        }
+        #speech-btn { 
+            background-color: #28a745; 
+        }
+        #speech-btn.listening { 
+            background-color: #dc3545; 
+        }
+        #speech-btn:hover { 
+            background-color: #218838; 
+        }
+        #speech-btn.listening:hover { 
+            background-color: #c82333; 
+        }
+        #speech-btn:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .history-entry { 
+            margin: 10px 0; 
+            padding: 10px; 
+            border-bottom: 1px solid #eee; 
+        }
+        .history-timestamp { 
+            font-size: 0.8em; 
+            color: #666; 
+        }
+    </style>
+</head>
+<body>
+    <div id="home-view">
+        <h1>Welcome to the Mental Health Assistant</h1>
+        <button onclick="showView('chat')">Start Chat</button>
+        <button onclick="showView('history')">View History</button>
+    </div>
+
+    <div id="chat-view" style="display:none;">
+        <h1>Chat with the Assistant</h1>
+        <div id="chat-box"></div>
+        <input type="text" id="chat-input" placeholder="How are you feeling?" />
+        <button onclick="sendChatMessage()">Send</button>
+        <button id="speech-btn" onclick="toggleSpeechRecognition()">Start Speaking</button>
+        <button onclick="showView('home')">Back to Home</button>
+    </div>
+
+    <div id="history-view" style="display:none;">
+        <h1>Chat History</h1>
+        <div id="history-box"></div>
+        <button onclick="showView('home')">Back to Home</button>
+    </div>
+
+    <script>
+        let sentimentModel;
+        let recognition;
+        let isRecognizing = false;
+
+        // Training data for multi-class sentiment analysis
+        const trainingData = [
+            { text: "I feel so happy today!", sentiment: "happy" },
+            { text: "I'm absolutely thrilled!", sentiment: "happy" },
+            { text: "This is the best day ever!", sentiment: "happy" },
+            { text: "I'm overjoyed with excitement!", sentiment: "happy" },
+            { text: "I'm so sad right now.", sentiment: "sad" },
+            { text: "I feel really down and depressed.", sentiment: "sad" },
+            { text: "Everything feels hopeless.", sentiment: "sad" },
+            { text: "My heart is heavy today.", sentiment: "sad" },
+            { text: "I'm so angry about this!", sentiment: "angry" },
+            { text: "This is infuriating and frustrating!", sentiment: "angry" },
+            { text: "I can't stand it anymore!", sentiment: "angry" },
+            { text: "I'm furious right now!", sentiment: "angry" },
+            { text: "I feel okay, just chilling.", sentiment: "neutral" },
+            { text: "Nothing special today.", sentiment: "neutral" },
+            { text: "I'm feeling alright.", sentiment: "neutral" },
+            { text: "Just another normal day.", sentiment: "neutral" },
+            { text: "I'm so lonely.", sentiment: "lonely" },
+            { text: "I feel so isolated and alone.", sentiment: "lonely" },
+            { text: "No one understands me.", sentiment: "lonely" },
+            { text: "I feel so disconnected.", sentiment: "lonely" },
+            { text: "I'm so overwhelmed with work.", sentiment: "overwhelmed" },
+            { text: "Everything is too much right now!", sentiment: "overwhelmed" },
+            { text: "I can't handle all this stress.", sentiment: "overwhelmed" },
+            { text: "I'm drowning in tasks.", sentiment: "overwhelmed" },
+            { text: "I'm really anxious about tomorrow.", sentiment: "anxious" },
+            { text: "I feel so nervous and worried.", sentiment: "anxious" },
+            { text: "My mind is racing with fears.", sentiment: "anxious" },
+            { text: "I'm so stressed and uneasy.", sentiment: "anxious" },
+            { text: "I feel hopeful about the future.", sentiment: "hopeful" },
+            { text: "Things are looking up!", sentiment: "hopeful" },
+            { text: "I'm optimistic about what's next.", sentiment: "hopeful" },
+            { text: "I have a good feeling about this!", sentiment: "hopeful" },
+            { text: "I'm so confused right now.", sentiment: "confused" },
+            { text: "I don't understand what's happening.", sentiment: "confused" },
+            { text: "My thoughts are all jumbled.", sentiment: "confused" },
+            { text: "I feel totally lost.", sentiment: "confused" }
+        ];
+
+        // Text preprocessing: word frequency vector
+        function textToFeatures(text) {
+            const words = text.toLowerCase().split(/\W+/).filter(word => word.length > 0);
+            const vocab = [
+                'happy', 'thrilled', 'best', 'excited', 'overjoyed', 'great',
+                'sad', 'down', 'hopeless', 'depressed', 'heavy',
+                'angry', 'infuriating', 'frustrated', 'furious', 'stand',
+                'okay', 'chilling', 'alright', 'normal', 'neutral',
+                'lonely', 'isolated', 'understands', 'disconnected',
+                'overwhelmed', 'stress', 'handle', 'drowning',
+                'anxious', 'nervous', 'worried', 'fears', 'stressed',
+                'hopeful', 'optimistic', 'future', 'good',
+                'confused', 'understand', 'jumbled', 'lost'
+            ];
+            const features = {};
+            vocab.forEach(word => {
+                features[word] = words.filter(w => w === word).length / words.length || 0;
+            });
+            return features;
+        }
+
+        // Keyword-based fallback for sentiment
+        function keywordSentimentCheck(text) {
+            const lowerText = text.toLowerCase();
+            const keywords = {
+                happy: ['happy', 'thrilled', 'excited', 'overjoyed', 'best'],
+                sad: ['sad', 'down', 'hopeless', 'depressed', 'heavy'],
+                angry: ['angry', 'infuriating', 'frustrated', 'furious'],
+                neutral: ['okay', 'chilling', 'alright', 'normal'],
+                lonely: ['lonely', 'isolated', 'disconnected'],
+                overwhelmed: ['overwhelmed', 'stress', 'drowning'],
+                anxious: ['anxious', 'nervous', 'worried', 'stressed'],
+                hopeful: ['hopeful', 'optimistic', 'good'],
+                confused: ['confused', 'jumbled', 'lost']
+            };
+            for (const sentiment in keywords) {
+                if (keywords[sentiment].some(word => lowerText.includes(word))) {
+                    return sentiment;
+                }
+            }
+            return 'neutral';
+        }
+
+        // Train the neural network
+        function trainSentimentModel() {
+            sentimentModel = new brain.NeuralNetwork({ hiddenLayers: [30, 20, 10] });
+            const trainingSet = trainingData.map(item => ({
+                input: textToFeatures(item.text),
+                output: {
+                    happy: item.sentiment === 'happy' ? 1 : 0,
+                    sad: item.sentiment === 'sad' ? 1 : 0,
+                    angry: item.sentiment === 'angry' ? 1 : 0,
+                    neutral: item.sentiment === 'neutral' ? 1 : 0,
+                    lonely: item.sentiment === 'lonely' ? 1 : 0,
+                    overwhelmed: item.sentiment === 'overwhelmed' ? 1 : 0,
+                    anxious: item.sentiment === 'anxious' ? 1 : 0,
+                    hopeful: item.sentiment === 'hopeful' ? 1 : 0,
+                    confused: item.sentiment === 'confused' ? 1 : 0
+                }
+            }));
+            sentimentModel.train(trainingSet, {
+                iterations: 5000,
+                learningRate: 0.01,
+                log: false
+            });
+            console.log("Sentiment model trained!");
+        }
+
+        // Initialize the model
+        trainSentimentModel();
+
+        // Initialize speech synthesis
+        const synth = window.speechSynthesis;
+
+        // Speak a message
+        function speakMessage(message) {
+            const utterance = new SpeechSynthesisUtterance(message);
+            utterance.lang = 'en-US';
+            utterance.volume = 1;
+            utterance.rate = 1;
+            utterance.pitch = 1;
+            synth.speak(utterance);
+        }
+
+        // Initialize speech recognition
+        function initSpeechRecognition() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const speechBtn = document.getElementById('speech-btn');
+            
+            if (!SpeechRecognition) {
+                console.error("Speech recognition not supported in this browser.");
+                showMessage("Speech recognition is not supported in this browser. Please use text input.");
+                speechBtn.disabled = true;
+                speechBtn.style.backgroundColor = '#6c757d';
+                return;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                console.log("Speech recognized:", transcript);
+                document.getElementById('chat-input').value = transcript;
+                sendChatMessage();
+            };
+
+            recognition.onerror = (event) => {
+                console.error(`Speech recognition error: ${event.error}`);
+                stopSpeechRecognition();
+                let errorMessage = "Sorry, I couldn't understand. Please try again.";
+                switch (event.error) {
+                    case 'not-allowed':
+                        errorMessage = "Microphone access denied. Please allow microphone access in your browser settings.";
+                        break;
+                    case 'no-speech':
+                        errorMessage = "No speech detected. Please speak clearly and try again.";
+                        break;
+                    case 'network':
+                        errorMessage = "Network error. Please check your internet connection and try again.";
+                        break;
+                    case 'service-not-allowed':
+                        errorMessage = "Speech recognition service is not available. Please use text input.";
+                        break;
+                    case 'aborted':
+                        errorMessage = "Speech recognition was aborted. Please try again.";
+                        break;
+                    default:
+                        errorMessage = `Speech recognition error (${event.error}). Please try again or use text input.`;
+                }
+                showMessage(errorMessage);
+            };
+
+            recognition.onend = () => {
+                console.log("Speech recognition ended.");
+                if (isRecognizing) {
+                    try {
+                        recognition.start();
+                        console.log("Speech recognition restarted.");
+                    } catch (error) {
+                        console.error("Failed to restart speech recognition:", error);
+                        stopSpeechRecognition();
+                        showMessage("Failed to restart speech recognition. Please try again.");
+                    }
+                }
+            };
+        }
+
+        // Toggle speech recognition
+        function toggleSpeechRecognition() {
+            if (!recognition) {
+                initSpeechRecognition();
+                if (!recognition) return;
+            }
+
+            const speechBtn = document.getElementById('speech-btn');
+            if (isRecognizing) {
+                stopSpeechRecognition();
+                speechBtn.textContent = "Start Speaking";
+                speechBtn.classList.remove('listening');
+            } else {
+                try {
+                    isRecognizing = true;
+                    recognition.start();
+                    console.log("Speech recognition started.");
+                    speechBtn.textContent = "Stop Speaking";
+                    speechBtn.classList.add('listening');
+                } catch (error) {
+                    console.error("Failed to start speech recognition:", error);
+                    isRecognizing = false;
+                    speechBtn.textContent = "Start Speaking";
+                    speechBtn.classList.remove('listening');
+                    showMessage("Failed to start speech recognition. Please check microphone permissions or try again.");
+                }
+            }
+        }
+
+        // Stop speech recognition
+        function stopSpeechRecognition() {
+            if (recognition && isRecognizing) {
+                isRecognizing = false;
+                try {
+                    recognition.stop();
+                    console.log("Speech recognition stopped.");
+                } catch (error) {
+                    console.error("Failed to stop speech recognition:", error);
+                }
+            }
+        }
+
+        // Switch between views
+        function showView(view) {
+            document.getElementById('home-view').style.display = 'none';
+            document.getElementById('chat-view').style.display = 'none';
+            document.getElementById('history-view').style.display = 'none';
+
+            document.getElementById(view + '-view').style.display = 'block';
+
+            if (view !== 'chat') {
+                stopSpeechRecognition();
+                const speechBtn = document.getElementById('speech-btn');
+                if (speechBtn) {
+                    speechBtn.textContent = "Start Speaking";
+                    speechBtn.classList.remove('listening');
+                }
+            }
+
+            if (view === 'history') {
+                loadHistory();
+            }
+        }
+
+        // Append chat messages and save to history
+        function appendChatMessage(message, isUser) {
+            const chatBox = document.getElementById('chat-box');
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add(isUser ? 'user-msg' : 'bot-msg');
+            msgDiv.textContent = message;
+            chatBox.appendChild(msgDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+
+            // Save to history
+            const data = loadData();
+            const timestamp = new Date().toISOString();
+            data.chatHistory.push({ message, isUser, timestamp });
+            try {
+                saveData(data);
+                console.log("Chat message saved:", { message, isUser, timestamp });
+            } catch (error) {
+                console.error("Failed to save chat history:", error);
+                showMessage("Error saving chat history. Check browser storage settings.");
+            }
+
+            if (!isUser) {
+                speakMessage(message);
+            }
+        }
+
+        // Send a chat message
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+            appendChatMessage(message, true);
+            await analyzeSentiment(message);
+            processBotResponse(message);
+            input.value = '';
+        }
+
+        // Process bot's default response
+        function processBotResponse(message) {
+            const response = "I'm here to help! You can talk to me anytime.";
+            appendChatMessage(response, false);
+        }
+
+        // Analyze sentiment and provide tailored response
+        async function analyzeSentiment(message) {
+            if (!sentimentModel) return;
+
+            const features = textToFeatures(message);
+            const prediction = sentimentModel.run(features);
+            const sentiments = ['happy', 'sad', 'angry', 'neutral', 'lonely', 'overwhelmed', 'anxious', 'hopeful', 'confused'];
+            let maxSentiment = sentiments.reduce((max, sentiment) => 
+                prediction[sentiment] > prediction[max] ? sentiment : max, 'neutral');
+
+            // Fallback to keyword check if prediction confidence is low
+            const maxProb = prediction[maxSentiment];
+            if (maxProb < 0.4) {
+                maxSentiment = keywordSentimentCheck(message);
+            }
+
+            const responses = {
+                happy: "You're radiating joy, and that's beautiful! Try a gratitude exercise: list three things that made you smile today. Want to share what’s sparking this happiness?",
+                sad: "I’m so sorry you’re feeling sad—your feelings are valid. Try a gentle self-care activity, like listening to calming music or journaling your thoughts. If it’s overwhelming, consider reaching out to a trusted friend or a helpline like 1-800-662-HELP. Want to talk about what’s going on?",
+                angry: "It’s okay to feel angry; it’s a natural emotion. Take a moment to breathe deeply—inhale for 4, hold for 4, exhale for 4. Writing down what’s upsetting you or going for a walk might help release some tension. Want to share what triggered this?",
+                neutral: "You’re in a calm, steady space today. Why not try something small to boost your mood, like a quick stretch or planning a fun activity for later? Anything exciting on your mind?",
+                lonely: "Feeling lonely can be tough, and I’m here with you. Reach out to someone you trust, even with a simple text, or engage in a favorite hobby to feel connected. Online communities can also help. Want to chat about something fun to lift your spirits?",
+                overwhelmed: "Being overwhelmed can feel like a heavy weight. Break things down with a to-do list, prioritizing one task at a time. Take 5 minutes for a mindfulness exercise: focus on your breath or notice five things around you. Want to talk through what’s piling up?",
+                anxious: "Anxiety can be really challenging, but you’re not alone. Try a grounding technique: name 5 things you see, 4 you can touch, 3 you hear, 2 you smell, and 1 you taste. If it persists, a counselor or helpline (like 1-800-950-NAMI) can offer support. Want to share what’s worrying you?",
+                hopeful: "Your hopefulness is inspiring! Channel this positivity by setting a small goal for today or visualizing a bright future. Write down one thing you’re excited about—it can amplify that feeling. Want to tell me more about what’s got you optimistic?",
+                confused: "Feeling confused can be disorienting, and it’s okay to take it slow. Try organizing your thoughts by writing them down or talking them out. Sometimes a break, like a short walk, can clear your mind. Want to explore what’s got you puzzled?"
+            };
+
+            appendChatMessage(responses[maxSentiment], false);
+        }
+
+        // Load and display chat history
+        function loadHistory() {
+            const historyBox = document.getElementById('history-box');
+            historyBox.innerHTML = '';
+            const data = loadData();
+            console.log("Loaded chat history:", data.chatHistory);
+            if (data.chatHistory.length === 0) {
+                const noHistoryDiv = document.createElement('div');
+                noHistoryDiv.textContent = "No chat history available.";
+                historyBox.appendChild(noHistoryDiv);
+            } else {
+                data.chatHistory.forEach(entry => {
+                    const entryDiv = document.createElement('div');
+                    entryDiv.classList.add('history-entry');
+                    const msgDiv = document.createElement('div');
+                    msgDiv.classList.add(entry.isUser ? 'user-msg' : 'bot-msg');
+                    msgDiv.textContent = entry.message;
+                    const timeDiv = document.createElement('div');
+                    timeDiv.classList.add('history-timestamp');
+                    timeDiv.textContent = new Date(entry.timestamp).toLocaleString();
+                    entryDiv.appendChild(msgDiv);
+                    entryDiv.appendChild(timeDiv);
+                    historyBox.appendChild(entryDiv);
+                });
+            }
+            historyBox.scrollTop = historyBox.scrollHeight;
+        }
+
+        // Show message
+        function showMessage(message) {
+            alert(message);
+        }
+
+        // Load data from local storage
+        function loadData() {
+            try {
+                const data = localStorage.getItem('mental-health-data');
+                const parsedData = data ? JSON.parse(data) : { chatHistory: [] };
+                parsedData.chatHistory = parsedData.chatHistory || [];
+                console.log("Data loaded from local storage:", parsedData);
+                return parsedData;
+            } catch (error) {
+                console.error("Failed to load data from local storage:", error);
+                showMessage("Error loading data. Check browser storage settings.");
+                return { chatHistory: [] };
+            }
+        }
+
+        // Save data to local storage
+        function saveData(data) {
+            try {
+                localStorage.setItem('mental-health-data', JSON.stringify(data));
+                console.log("Data saved to local storage:", data);
+            } catch (error) {
+                console.error("Failed to save data to local storage:", error);
+                throw error;
+            }
+        }
+
+        // Initialize app
+        showView('home');
+        initSpeechRecognition();
+    </script>
+</body>
+</html>
